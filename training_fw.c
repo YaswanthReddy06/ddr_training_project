@@ -83,7 +83,13 @@ static int find_right_edge(int lo, int hi) {
  * hang forever if the whole range somehow fails. */
 static int find_any_passing_value(int lo, int hi) {
     int mid = lo + (hi - lo) / 2;
-    for (int offset = 0; offset <= (hi - lo) / 2; offset++) {
+    /* mid is closer to lo than to hi whenever (hi - lo) is odd (integer
+     * division above rounds down), so bounding the probe by (hi - lo) / 2
+     * under-covers the hi side by one -- delay_setting == hi is never
+     * tried. Use the larger of the two distances so both ends of the
+     * range are fully covered. */
+    int max_offset = (mid - lo > hi - mid) ? (mid - lo) : (hi - mid);
+    for (int offset = 0; offset <= max_offset; offset++) {
         if (mid - offset >= lo && query_pass(mid - offset)) return mid - offset;
         if (mid + offset <= hi && query_pass(mid + offset)) return mid + offset;
     }
