@@ -1,0 +1,11 @@
+sim.vvp
+training_fw
+*.vcd
+req_pipe
+resp_pipe
+window_config.txt
+tb_log_*.txt
+tb_debug_*.txt
+fw_debug_*.txt
+*_run_log.txt
+__pycache__/
