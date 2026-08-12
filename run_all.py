@@ -29,14 +29,20 @@ REQ_PIPE = os.path.join(PROJECT_DIR, "req_pipe")
 RESP_PIPE = os.path.join(PROJECT_DIR, "resp_pipe")
 VCD_FILE = os.path.join(PROJECT_DIR, "training.vcd")
 
-# Five "chips": deliberately includes edge cases (window touching 0 and 31)
-# in addition to comfortable middle-of-range windows.
+# "Chips": deliberately includes edge cases (window touching 0 and 31)
+# in addition to comfortable middle-of-range windows. (0, 0) and (31, 31)
+# are single-setting windows sitting exactly at each end of the range --
+# they're what caught the find_any_passing_value off-by-one (the linear
+# probe used to never try delay_setting == 31, so a window with only that
+# one passing value made training report a false failure).
 CONFIGS = [
     (10, 22),
     (5, 9),
     (20, 30),
     (0, 3),
     (27, 31),
+    (0, 0),
+    (31, 31),
 ]
 
 
