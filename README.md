@@ -1,6 +1,6 @@
 # DDR-style delay-line training co-simulation
 
-**📄 [Read the full project explainer](https://yaswanthreddy06.github.io/ddr_training_project_explainer.html)** —
+**📄 [Read the full project explainer](https://yaswanthreddy06.github.io/ddr_training_project/)** —
 architecture diagrams, the training algorithm walked through with real
 numbers, waveform reading, and both bugs traced with actual log output.
 (GitHub's file viewer only shows HTML source, not the rendered page —
