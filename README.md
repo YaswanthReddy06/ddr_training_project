@@ -1,5 +1,11 @@
 # DDR-style delay-line training co-simulation
 
+**📄 [Read the full project explainer](https://yaswanthreddy06.github.io/ddr_training_project/ddr_training_project_explainer.html)** —
+architecture diagrams, the training algorithm walked through with real
+numbers, waveform reading, and both bugs traced with actual log output.
+(GitHub's file viewer only shows HTML source, not the rendered page —
+that link is the live rendered version.)
+
 A small, real, working demonstration of the exact pattern described in
 Cadence's R55225 job description: **bare-metal-style C firmware driving
 real Verilog RTL through simulation, before any silicon exists**, using
