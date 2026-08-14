@@ -41,7 +41,7 @@ picking its center.
   window, computes the correct center directly (it doesn't search for
   anything — it already "knows" the answer), and is used to grade
   firmware's result.
-- **`run_all.py`** — orchestrator. Runs the whole loop across 5
+- **`run_all.py`** — orchestrator. Runs the whole loop across 7
   different hidden windows (including edge cases at the range
   boundaries) without recompiling anything, and reports PASS/FAIL
   against the golden model for each.
@@ -50,7 +50,7 @@ picking its center.
 
 ```bash
 iverilog -g2005 -o sim.vvp delay_line.v tb_top.v   # compile the RTL
-python3 run_all.py                                  # run all 5 configs
+python3 run_all.py                                  # run all 7 configs
 ```
 
 Or run a single configuration with hardware-side debug logging:
@@ -62,7 +62,9 @@ Or run a single configuration with hardware-side debug logging:
 
 ## Result
 
-All 5 configurations pass, matching the golden model exactly:
+All 7 configurations pass, matching the golden model exactly (the last
+two are the regression configs added after bug #2 below — single-tap
+windows sitting exactly on each end of the range):
 
 | Hidden window | Firmware found | Center | Hardware queries |
 |---|---|---|---|
@@ -71,15 +73,17 @@ All 5 configurations pass, matching the golden model exactly:
 | [20, 30] | [20, 30] | 25 | 20 |
 | [0, 3]   | [0, 3]   | 1  | 31 |
 | [27, 31] | [27, 31] | 29 | 33 |
+| [0, 0]   | [0, 0]   | 0  | 36 |
+| [31, 31] | [31, 31] | 31 | 38 |
 
 Note the query-count pattern: the middle-of-range config (9 queries) is
-far cheaper than the edge-of-range configs (31-33 queries). That's
+far cheaper than the edge-of-range configs (33-38 queries). That's
 because the initial "find any passing point" step does a linear probe
 outward from the range center — cheap when the window is near the
 middle, expensive when it's near an edge. See `KNOWN_LIMITATIONS.md`
 for why, and what a better implementation would do.
 
-## A real bug, found and fixed
+## Bug #1, found and fixed: the RTL off-by-one
 
 While building this, `delay_line.v`'s comparator was written as:
 
@@ -118,6 +122,68 @@ guide — is it a firmware bug or an RTL bug?):
 This is the exact "is it firmware or RTL" triage skill the interview
 JD calls out directly.
 
+## Bug #2, found and fixed: tap 31 was unreachable
+
+A second, purely algorithmic bug turned up in `find_any_passing_value()`
+in `training_fw.c` — the linear probe that finds an initial known-good
+setting before the binary-search edges can run:
+
+```c
+// BUG: loop bound rounds toward the low side, never reaching the top of the range
+static int find_any_passing_value(int lo, int hi) {
+    int mid = lo + (hi - lo) / 2;
+    for (int offset = 0; offset <= (hi - lo) / 2; offset++) {
+        if (mid - offset >= lo && query_pass(mid - offset)) return mid - offset;
+        if (mid + offset <= hi && query_pass(mid + offset)) return mid + offset;
+    }
+    return -1;
+}
+```
+
+For the full range `[0, 31]`, `mid = 15` and the loop bound is
+`(31-0)/2 = 15` (integer division truncates). The farthest tap this
+could ever reach on the high side was `mid + 15 = 30` — **tap 31 was
+structurally unreachable**, no matter how many offsets ran. A hidden
+window whose only valid setting was `31` (e.g. `[31,31]`) would make
+firmware report `TRAINING FAILED - no passing setting found in range`,
+even though `31` is a perfectly legal delay setting.
+
+**Triage** (same checklist as bug #1, opposite conclusion): reproduced
+deterministically with `window_config.txt = "31 31"` → checked
+firmware's log (never sends `delay=31`) → checked hardware's log (never
+receives `delay_setting=31`) → both sides agree, and what they agree on
+is that the query never happened. That rules out an RTL bug — the
+comparator was never given the chance to answer wrong. The bug was
+firmware's search-loop bound, not the hardware.
+
+**Notably, this bug didn't show up in the original 5-config suite** —
+`[27,31]` happens to find a passing value (27) before the probe runs out
+of budget, so none of the original configs exercised the exact failure
+mode. It was only caught by reasoning about the loop's coverage
+directly.
+
+The fix:
+
+```c
+// FIX: size the bound off the larger of the two distances to each end of the range
+static int find_any_passing_value(int lo, int hi) {
+    int mid = lo + (hi - lo) / 2;
+    int max_offset = (mid - lo > hi - mid) ? (mid - lo) : (hi - mid);
+    for (int offset = 0; offset <= max_offset; offset++) {
+        if (mid - offset >= lo && query_pass(mid - offset)) return mid - offset;
+        if (mid + offset <= hi && query_pass(mid + offset)) return mid + offset;
+    }
+    return -1;
+}
+```
+
+Verified independently of `iverilog` by porting the exact algorithm to
+Python and running it against **all 528 possible `[lo, hi]` windows**
+in `[0, 31]` — not just the 5 in the regular suite. Before the fix:
+exactly 1 mismatch (`[31,31]`). After the fix: 0 mismatches. Two
+regression configs, `(0, 0)` and `(31, 31)`, were added to `run_all.py`
+so the standard suite catches this class of bug going forward.
+
 ## Files in this project
 
 - `delay_line.v` — the DUT (fixed, correct version)
@@ -126,7 +192,7 @@ JD calls out directly.
 - `tb_top.v` — testbench / co-simulation harness
 - `training_fw.c` — the firmware (compile with `gcc -O2 -o training_fw training_fw.c`)
 - `golden_model.py` — independent reference model
-- `run_all.py` — orchestrator, runs all 5 configs and grades them
+- `run_all.py` — orchestrator, runs all 7 configs and grades them
 - `run_single.sh` — runs one config with hardware-side debug logging
 - `window_config.txt` — written fresh by each run; not meant to be edited by hand
 - `training.vcd` — waveform from the most recent run (open with GTKWave)

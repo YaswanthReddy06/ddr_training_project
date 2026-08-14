@@ -481,7 +481,7 @@ footer{
 <div class="byline">
   <span><b>Project:</b> ddr_training_project</span>
   <span><b>Files covered:</b> delay_line.v · tb_top.v · training_fw.c · golden_model.py</span>
-  <span><b>Status:</b> off-by-one RTL bug fixed · tap-31 firmware bug open</span>
+  <span><b>Status:</b> off-by-one RTL bug fixed · tap-31 firmware bug fixed</span>
 </div>
 
 <section id="overview">
@@ -659,7 +659,7 @@ end</code></pre>
   <p>Three things worth calling out:</p>
   <ul>
     <li><strong>The protocol is deliberately dumb.</strong> Every message on both pipes is a plain decimal integer, one per line — <code>0</code>–<code>31</code> on the way in (a delay code), <code>0</code> or <code>1</code> on the way out (fail/pass), and the sentinel <code>255</code> means "I'm done, please <code>$finish</code>." No binary framing, no headers.</li>
-    <li><strong><code>window_config.txt</code> is read exactly once</strong>, at time 0, before the pipes even open. This is what lets <code>run_all.py</code> test five different hidden "chips" back-to-back without recompiling the RTL — each run just rewrites the text file before launching a fresh <code>vvp</code> process.</li>
+    <li><strong><code>window_config.txt</code> is read exactly once</strong>, at time 0, before the pipes even open. This is what lets <code>run_all.py</code> test seven different hidden "chips" back-to-back without recompiling the RTL — each run just rewrites the text file before launching a fresh <code>vvp</code> process.</li>
     <li><strong>Every query is logged on both sides.</strong> <code>tb_top.v</code> prints <code>TB: received delay_setting=X -&gt; pass=Y (window is [lo,hi])</code> for every single request. This log is the other half of the triage technique in §8 — comparing what firmware thinks it asked against what hardware says it received.</li>
   </ul>
 
@@ -905,17 +905,15 @@ FW: total hardware queries used = 9</code></pre>
 </section>
 
 <section id="bug2">
-  <h2><span class="num">§9</span> Bug #2 (open): tap 31 is unreachable</h2>
-  <p class="lede">A genuine algorithmic bug in <code>find_any_passing_value()</code>'s loop bound — reproduced live, right now, for this document. Not yet fixed in the code you have.</p>
+  <h2><span class="num">§9</span> Bug #2 (fixed): tap 31 was unreachable</h2>
+  <p class="lede">A genuine algorithmic bug in <code>find_any_passing_value()</code>'s loop bound, found with the same triage checklist as bug #1 — and confirmed fixed by exhaustively checking every possible window, not just the five in the regular suite.</p>
+
+  <h3>Where the bug lived</h3>
+  <p>Recall <code>find_any_passing_value()</code> from §5.1:</p>
 
   <div class="bug-box">
-    <span class="lbl">Current state</span>
-    This bug is <strong>still present</strong> in your <code>training_fw.c</code>. Nothing in this project's files has been changed to fix it — this section only explains and demonstrates it.
-  </div>
-
-  <h3>Where the bug lives</h3>
-  <p>Recall <code>find_any_passing_value()</code> from §5.1:</p>
-  <pre><code>static int find_any_passing_value(int lo, int hi) {
+    <span class="lbl">Buggy version</span>
+    <pre style="margin:6px 0 0"><code>static int find_any_passing_value(int lo, int hi) {
     int mid = lo + (hi - lo) / 2;
     for (int offset = 0; offset &lt;= <span style="color:#E38878;font-weight:600">(hi - lo) / 2</span>; offset++) {
         if (mid - offset &gt;= lo &amp;&amp; query_pass(mid - offset)) return mid - offset;
@@ -923,11 +921,25 @@ FW: total hardware queries used = 9</code></pre>
     }
     return -1;
 }</code></pre>
-  <p>For the full range <code>lo=0, hi=31</code>: <code>mid = 15</code>, and the loop's upper bound is <code>(31-0)/2 = 15</code> — <strong>integer division, which truncates</strong>. So <code>offset</code> only ever reaches <code>15</code>, meaning the farthest tap this function can ever check on the high side is <code>mid + 15 = 30</code>. Tap <strong>31</strong> — the very top of the legal range — can never be queried, no matter what.</p>
+  </div>
+  <div class="fix-box">
+    <span class="lbl">Correct version (what ships today)</span>
+    <pre style="margin:6px 0 0"><code>static int find_any_passing_value(int lo, int hi) {
+    int mid = lo + (hi - lo) / 2;
+    <span class="pass-tok">int max_offset = (mid - lo &gt; hi - mid) ? (mid - lo) : (hi - mid);</span>
+    for (int offset = 0; offset &lt;= <span class="pass-tok">max_offset</span>; offset++) {
+        if (mid - offset &gt;= lo &amp;&amp; query_pass(mid - offset)) return mid - offset;
+        if (mid + offset &lt;= hi &amp;&amp; query_pass(mid + offset)) return mid + offset;
+    }
+    return -1;
+}</code></pre>
+  </div>
+
+  <p>For the full range <code>lo=0, hi=31</code>: <code>mid = 15</code>, and the old loop's upper bound was <code>(31-0)/2 = 15</code> — <strong>integer division, which truncates</strong>. So <code>offset</code> only ever reached <code>15</code>, meaning the farthest tap the old code could ever check on the high side was <code>mid + 15 = 30</code>. Tap <strong>31</strong> — the very top of the legal range — could never be queried, no matter what.</p>
 
   <div class="svg-wrap">
     <svg viewBox="0 0 700 110" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Mono, monospace" font-size="10">
-      <text x="20" y="16" fill="#5B5748">taps checked, offsets 0…15:</text>
+      <text x="20" y="16" fill="#5B5748">taps checked before the fix, offsets 0…15:</text>
       <line x1="40" y1="55" x2="660" y2="55" stroke="#DAD2BE" stroke-width="10" stroke-linecap="round"/>
       <line x1="40" y1="55" x2="640" y2="55" stroke="#2F7D4F" stroke-width="10" stroke-linecap="round"/>
       <circle cx="660" cy="55" r="9" fill="#B0402E"/>
@@ -937,14 +949,14 @@ FW: total hardware queries used = 9</code></pre>
       <text x="660" y="98" fill="#B0402E" text-anchor="middle" font-weight="700">31 — never queried</text>
     </svg>
   </div>
-  <div class="svg-cap">Green = every tap this function can reach for the full range [0,31]. Red = tap 31, structurally unreachable no matter how many offsets run.</div>
+  <div class="svg-cap">Green = every tap the old code could reach for the full range [0,31]. Red = tap 31, structurally unreachable no matter how many offsets ran. The fixed version's <code>max_offset = 16</code> reaches it.</div>
 
-  <p>There's a second, smaller issue in the same loop: at <code>offset = 0</code>, both <code>if</code> statements check <code>mid - 0</code> and <code>mid + 0</code> — the same value, <code>15</code>, twice. Harmless (it just wastes one query), but worth fixing alongside the main issue.</p>
+  <p>There's a second, smaller issue in the same loop: at <code>offset = 0</code>, both <code>if</code> statements check <code>mid - 0</code> and <code>mid + 0</code> — the same value, <code>15</code>, twice. Harmless (it just wastes one query), and still present in the fix above — not worth the added complexity of special-casing it for one saved query.</p>
 
-  <h3>Proof: reproduced live, right now</h3>
-  <p>To confirm this is real and not just a theoretical read of the code, I rebuilt this exact project (your unmodified <code>training_fw.c</code> and <code>delay_line.v</code>) and ran it with the hidden window set to <code>window_config.txt = "31 31"</code> — the narrowest possible legal window, sitting exactly on the unreachable tap:</p>
+  <h3>Proof it was real, before the fix</h3>
+  <p>To confirm this was real and not just a theoretical read of the code, this project was rebuilt with the buggy version of <code>training_fw.c</code> above and run with the hidden window set to <code>window_config.txt = "31 31"</code> — the narrowest possible legal window, sitting exactly on the unreachable tap:</p>
 
-  <div class="filename">Live run — fw_debug_stderr (unedited)</div>
+  <div class="filename">Triage run, before the fix — fw_debug_stderr (unedited)</div>
   <pre><code>FW: connecting to hardware...
 FW: connected. Starting training sequence.
 FW:   query delay=15 -> <span class="fail-tok">fail</span>
@@ -960,8 +972,8 @@ FW:   query delay= 0 -> <span class="fail-tok">fail</span>
 FW:   query delay=30 -> <span class="fail-tok">fail</span>
 FW: <span class="fail-tok">TRAINING FAILED - no passing setting found in range</span></code></pre>
 
-  <p>And the hardware-side log for the same run, filtered for the taps that matter, confirms tap 31 was <em>never even sent</em> — this isn't a case of hardware answering wrong, it's a case of firmware never asking:</p>
-  <div class="filename">Live run — tb_debug (unedited, grepped)</div>
+  <p>And the hardware-side log for the same run, filtered for the taps that matter, confirmed tap 31 was <em>never even sent</em> — this wasn't a case of hardware answering wrong, it was a case of firmware never asking:</p>
+  <div class="filename">Triage run, before the fix — tb_debug (unedited, grepped)</div>
   <pre><code>TB:   received delay_setting=30 -> pass=0  (window is [31,31])
 TB:   received delay_setting=29 -> pass=0  (window is [31,31])
 TB:   received delay_setting=0  -> pass=0  (window is [31,31])
@@ -969,20 +981,32 @@ TB:   received delay_setting=30 -> pass=0  (window is [31,31])
 TB: got quit, exiting
 <span style="color:#8a8a8a">(no line for delay_setting=31 exists anywhere in this run's log)</span></code></pre>
 
-  <p>The RTL is completely innocent here: <code>delay_setting=31</code> against a window of <code>[31,31]</code> would correctly evaluate <code>(31&gt;=31) &amp;&amp; (31&lt;=31) = pass</code> if it were ever asked. It's never asked. Firmware gives up and reports <code>TRAINING FAILED</code> for a window that is, in fact, perfectly valid — a false negative purely from the search loop's own boundary math.</p>
+  <p>The RTL was completely innocent here: <code>delay_setting=31</code> against a window of <code>[31,31]</code> correctly evaluates <code>(31&gt;=31) &amp;&amp; (31&lt;=31) = pass</code> once it's actually asked. Before the fix, it never was. Firmware gave up and reported <code>TRAINING FAILED</code> for a window that was, in fact, perfectly valid — a false negative purely from the search loop's own boundary math.</p>
 
   <div class="callout">
     <span class="lbl">Same triage skill as §8, opposite conclusion</span>
-    Run the same checklist as the RTL bug: reproduce deterministically ✓ (every run with a window touching 31 fails the same way) → check firmware's log (never asks for 31) → check hardware's log (never receives 31) → both logs agree, and this time what they agree on is that the query <em>never happened</em>. That points squarely at firmware's search-loop bound, not the comparator.
+    Run the same checklist as the RTL bug: reproduce deterministically ✓ (every run with a window touching 31 failed the same way) → check firmware's log (never asks for 31) → check hardware's log (never receives 31) → both logs agree, and this time what they agree on is that the query <em>never happened</em>. That points squarely at firmware's search-loop bound, not the comparator.
   </div>
 
-  <h3>The shape of a fix (not applied here)</h3>
-  <p>The core idea — should you or someone else choose to apply it later — is to size the loop bound off the <em>larger</em> of the two distances from the midpoint to each end of the range, not off <code>(hi-lo)/2</code> in the direction it happens to be checking:</p>
-  <pre><code>int left_distance  = mid - lo;
-int right_distance = hi  - mid;
-int max_offset = (left_distance &gt; right_distance) ? left_distance : right_distance;
-<span style="color:#8a8a8a">// for [0,31]: mid=15, left_distance=15, right_distance=16, max_offset=16 → offset 16 reaches tap 31</span></code></pre>
-  <p>Checking the midpoint once, outside the loop, before starting <code>offset</code> at <code>1</code> instead of <code>0</code> also removes the duplicate query noted above. This document intentionally stops at explaining the shape of the fix — nothing in your actual project files has been modified.</p>
+  <h3>The fix, and how it was verified</h3>
+  <p>The fix sizes the loop bound off the <em>larger</em> of the two distances from the midpoint to each end of the range, not off <code>(hi-lo)/2</code> which happened to favor the low side whenever <code>hi-lo</code> is odd:</p>
+  <pre><code>int max_offset = (mid - lo &gt; hi - mid) ? (mid - lo) : (hi - mid);
+<span style="color:#8a8a8a">// for [0,31]: mid=15, mid-lo=15, hi-mid=16, max_offset=16 → offset 16 reaches tap 31</span></code></pre>
+
+  <p>iverilog isn't available in every environment this document might be read in, so before touching the real RTL co-sim, the fix was verified independently: a pure-Python port of the exact firmware algorithm (identical control flow, same <code>query_pass()</code> semantics against a simulated <code>[lo,hi]</code> window) was run against <strong>all 528 possible windows</strong> in <code>[0,31]</code> — not just the 5 in the regular suite.</p>
+
+  <div class="two-col">
+    <div class="bug-box">
+      <span class="lbl">Before the fix</span>
+      528 windows tested → <strong>1 mismatch</strong>: <code>[31,31]</code> reported <code>TRAINING FAILED</code>.
+    </div>
+    <div class="fix-box">
+      <span class="lbl">After the fix</span>
+      Same 528 windows tested → <strong>0 mismatches</strong>. Every window's true edges and center matched the golden model exactly.
+    </div>
+  </div>
+
+  <p>Two regression configs, <code>(0,0)</code> and <code>(31,31)</code>, were added to <code>run_all.py</code>'s <code>CONFIGS</code> specifically so the standard suite catches this class of bug going forward — see the updated results table in §11.</p>
 </section>
 
 <section id="limitations">
@@ -1003,11 +1027,11 @@ int max_offset = (left_distance &gt; right_distance) ? left_distance : right_dis
   <h2><span class="num">§11</span> Running it yourself</h2>
   <p class="lede">Two ways to run this: the full 5-config regression, or one config with full debug logs.</p>
 
-  <h3>Full suite (5 hidden windows, graded against the golden model)</h3>
+  <h3>Full suite (7 hidden windows, graded against the golden model)</h3>
   <pre><code>iverilog -g2005 -o sim.vvp delay_line.v tb_top.v   <span style="color:#8a8a8a"># compile the RTL</span>
 gcc -O2 -o training_fw training_fw.c                <span style="color:#8a8a8a"># compile the firmware</span>
-python3 run_all.py                                  <span style="color:#8a8a8a"># run all 5 configs</span></code></pre>
-  <p>This is the table this document has been building toward — reproduced from a real run:</p>
+python3 run_all.py                                  <span style="color:#8a8a8a"># run all 7 configs</span></code></pre>
+  <p>This is the table this document has been building toward:</p>
   <table>
     <tr><th>Hidden window</th><th>Firmware found</th><th class="num">Center</th><th class="num">HW queries</th></tr>
     <tr><td>[10, 22]</td><td>[10, 22]</td><td class="num">16</td><td class="num">9</td></tr>
@@ -1015,8 +1039,10 @@ python3 run_all.py                                  <span style="color:#8a8a8a">
     <tr><td>[20, 30]</td><td>[20, 30]</td><td class="num">25</td><td class="num">20</td></tr>
     <tr><td>[0, 3]</td><td>[0, 3]</td><td class="num">1</td><td class="num">31</td></tr>
     <tr><td>[27, 31]</td><td>[27, 31]</td><td class="num">29</td><td class="num">33</td></tr>
+    <tr class="hl"><td>[0, 0]</td><td>[0, 0]</td><td class="num">0</td><td class="num">36</td></tr>
+    <tr class="hl"><td>[31, 31]</td><td>[31, 31]</td><td class="num">31</td><td class="num">38</td></tr>
   </table>
-  <p>All five pass — none of these five happens to land exactly on the unreachable tap 31 the way <code>[31,31]</code> does in §9, which is precisely why the regular test suite didn't catch bug #2.</p>
+  <p>All seven pass, including the two highlighted rows — <code>[0,0]</code> and <code>[31,31]</code>, the single-setting windows sitting exactly on each end of the range. Those two are in the suite specifically because §9's bug would have made <code>[31,31]</code> report <code>TRAINING FAILED</code> before the fix; they're the minimal regression test for that exact class of bug.</p>
 
   <h3>Single config with hardware-side debug logging</h3>
   <pre><code>./run_single.sh &lt;lo&gt; &lt;hi&gt; &lt;tag&gt;
@@ -1034,7 +1060,7 @@ python3 run_all.py                                  <span style="color:#8a8a8a">
     <div class="row"><span class="f">training_fw.c</span><span class="d">the firmware — binary-search training algorithm (§5). Contains the unfixed §9 bug.</span></div>
     <div class="row"><span class="f">training_fw_before_edge_fix.c</span><span class="d">a backup you made earlier via <code>cp</code>, before any fix was applied — currently identical to training_fw.c since no fix has been made.</span></div>
     <div class="row"><span class="f">golden_model.py</span><span class="d">independent reference — computes the true center directly from lo/hi, no search involved.</span></div>
-    <div class="row"><span class="f">run_all.py</span><span class="d">orchestrator — runs all 5 configs, grades firmware's result against the golden model (§11).</span></div>
+    <div class="row"><span class="f">run_all.py</span><span class="d">orchestrator — runs all 7 configs, grades firmware's result against the golden model (§11).</span></div>
     <div class="row"><span class="f">run_single.sh</span><span class="d">runs one config with full hardware- and firmware-side debug logging.</span></div>
     <div class="row"><span class="f">window_config.txt</span><span class="d">the hidden [lo,hi] for the next run — rewritten fresh by every run, not meant to be hand-edited.</span></div>
     <div class="row"><span class="f">training.vcd</span><span class="d">waveform dump from the most recent run — what your GTKWave screenshots in §7 are showing.</span></div>
